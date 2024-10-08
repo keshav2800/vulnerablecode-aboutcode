@@ -27,7 +27,7 @@ from rest_framework.throttling import AnonRateThrottle
 from rest_framework.throttling import UserRateThrottle
 
 from vulnerabilities.models import Alias
-from vulnerabilities.models import Kev
+from vulnerabilities.models import Exploit
 from vulnerabilities.models import Package
 from vulnerabilities.models import Vulnerability
 from vulnerabilities.models import VulnerabilityReference
@@ -175,10 +175,23 @@ class WeaknessSerializer(serializers.HyperlinkedModelSerializer):
         return representation
 
 
-class KEVSerializer(serializers.ModelSerializer):
+class ExploitSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Kev
-        fields = ["date_added", "description", "required_action", "due_date", "resources_and_notes"]
+        model = Exploit
+        fields = [
+            "date_added",
+            "description",
+            "required_action",
+            "due_date",
+            "notes",
+            "known_ransomware_campaign_use",
+            "source_date_published",
+            "exploit_type",
+            "platform",
+            "source_date_updated",
+            "data_source",
+            "source_url",
+        ]
 
 
 class VulnerabilitySerializer(BaseResourceSerializer):
@@ -189,7 +202,7 @@ class VulnerabilitySerializer(BaseResourceSerializer):
 
     references = VulnerabilityReferenceSerializer(many=True, source="vulnerabilityreference_set")
     aliases = AliasSerializer(many=True, source="alias")
-    kev = KEVSerializer(read_only=True)
+    exploits = ExploitSerializer(many=True, read_only=True)
     weaknesses = WeaknessSerializer(many=True)
     severity_range_score = serializers.SerializerMethodField()
 
@@ -198,10 +211,6 @@ class VulnerabilitySerializer(BaseResourceSerializer):
 
         weaknesses = data.get("weaknesses", [])
         data["weaknesses"] = [weakness for weakness in weaknesses if weakness is not None]
-
-        kev = data.get("kev", None)
-        if not kev:
-            data.pop("kev")
 
         return data
 
@@ -240,7 +249,7 @@ class VulnerabilitySerializer(BaseResourceSerializer):
             "affected_packages",
             "references",
             "weaknesses",
-            "kev",
+            "exploits",
             "severity_range_score",
         ]
 
@@ -486,12 +495,15 @@ class PackageViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=["get"])
     def all(self, request):
         """
-        Return the Package URLs of all packages known to be vulnerable.
+        Return a list of Package URLs of vulnerable packages.
         """
-        vulnerable_packages = (
-            Package.objects.vulnerable().only("package_url").distinct().with_is_vulnerable()
+        vulnerable_purls = (
+            Package.objects.vulnerable()
+            .only("package_url")
+            .order_by("package_url")
+            .distinct()
+            .values_list("package_url", flat=True)
         )
-        vulnerable_purls = [str(package.package_url) for package in vulnerable_packages]
         return Response(vulnerable_purls)
 
     @extend_schema(
@@ -673,14 +685,10 @@ class AliasFilterSet(filters.FilterSet):
         return self.queryset.filter(aliases__alias__icontains=alias)
 
 
-class AliasViewSet(viewsets.ReadOnlyModelViewSet):
+class AliasViewSet(VulnerabilityViewSet):
     """
     Lookup for vulnerabilities by vulnerability aliases such as a CVE
     (https://nvd.nist.gov/general/cve-process).
     """
 
-    queryset = Vulnerability.objects.all()
-    serializer_class = VulnerabilitySerializer
-    filter_backends = (filters.DjangoFilterBackend,)
     filterset_class = AliasFilterSet
-    throttle_classes = [StaffUserRateThrottle, AnonRateThrottle]
